@@ -235,6 +235,7 @@ const icon = (id, cls = "") => `<svg class="ic ${cls}"><use href="#i-${id}"/></s
 const tel = p => "tel:" + String(p).replace(/[^\d+]/g, "");
 const fmtTime = d => d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 const fmtDate = d => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }) + ", " + fmtTime(d);
+const when = d => d.toDateString() === new Date().toDateString() ? fmtTime(d) : fmtDate(d);
 const catById = id => CATS.find(c => c.id === id);
 
 function mapsUrl(p) {
@@ -246,7 +247,7 @@ function mapsUrl(p) {
 
 /* ---------- Emergency-department data ---------- */
 
-function normaliseEd(raw) {
+function normaliseEd(raw, updatedAt) {
   return raw.map(h => {
     const d = h.data && h.data.data;
     const names = ED_NAMES[h.key] || { name: h.nome, city: "" };
@@ -262,6 +263,7 @@ function normaliseEd(raw) {
       phone: (h.telefono || "").trim(),
       web: h.web,
       hasData: !!d,
+      updatedAt,
       levels,
       waiting: levels.reduce((s, l) => s + l.waiting, 0),
       treating: levels.reduce((s, l) => s + l.treating, 0)
@@ -281,9 +283,16 @@ async function loadEd(force = false) {
     const json = await res.json();
     if (!json.status || !Array.isArray(json.data)) throw new Error("Unexpected response");
     // The feed sometimes answers without counts while it refreshes; keep the last good data instead
-    const fresh = normaliseEd(json.data);
+    const now = new Date();
+    const fresh = normaliseEd(json.data, now);
     if (!fresh.some(h => h.hasData)) throw new Error("Feed returned no counts");
-    ed.list = fresh; ed.fetchedAt = new Date(); ed.live = true;
+    // Hospitals missing from this update keep their last known counts, labelled with their own time
+    ed.list = fresh.map(f => {
+      if (f.hasData) return f;
+      const prev = ed.list && ed.list.find(p => p.key === f.key && p.hasData);
+      return prev ? { ...prev, stale: true } : f;
+    });
+    ed.fetchedAt = now; ed.live = true;
   } catch (e) {
     ed.live = false;
     setTimeout(() => loadEd(true), 10000);
@@ -359,7 +368,7 @@ function screenExplore() {
       <div style="flex:1">${edStatus()}<div class="lbl" style="margin-top:3px">People waiting to be seen across the Turin area</div></div>
       <div class="big">${total ?? "–"}</div></div>
     ${top.length ? `<div class="minirow">${top.map(h => `<div class="mini"><b>${h.waiting}</b><span>${esc(h.name)}</span></div>`).join("")}</div>
-    <div class="note-sub">General EDs in Turin city with the fewest people waiting. Counts are not waiting times.</div>` : ""}
+    <div class="note-sub">General EDs in Turin city with the fewest people waiting.${ed.list.some(h => h.stale) ? " Some hospitals show their last known count." : ""} Counts are not waiting times.</div>` : ""}
   </a>
   <p class="source">ED data from <a href="${ED_PAGE}" target="_blank" rel="noopener">prontosoccorso.live</a>. Places from Google Maps, ${window.DA_SOURCE_DATE}. In an emergency call <a href="tel:112">112</a>.</p>`;
 }
@@ -426,7 +435,7 @@ function screenProvider(id) {
 const edRow = h => `<a class="listcard edrow" href="#/er/${h.key}">
         <div class="list-header"><span class="tone r">${icon("hospital")}</span>
           <div class="storetitle"><strong>${esc(h.name)}</strong><small>${esc(h.city)}${h.note ? " · " + esc(h.note) : ""}</small></div>
-          <div class="counts">${h.hasData ? `<b>${h.waiting}</b><span>waiting</span>` : `<span>No data</span>`}</div></div>
+          <div class="counts">${h.hasData ? `<b>${h.waiting}</b><span>waiting${h.stale ? `<br>as of ${when(h.updatedAt)}` : ""}</span>` : `<span>No data</span>`}</div></div>
         ${triageBar(h)}
       </a>`;
 
@@ -458,7 +467,7 @@ function screenErDetail(key) {
     <div class="profile-cover"><div class="cover-ring"></div><div class="coverbadge">${icon("pulse")}</div></div>
     <div class="profile-name"><h2>Pronto Soccorso ${esc(h.name)}</h2><p>${esc(h.fullName)}</p>
       <div class="meta-row">${h.note ? `<span class="pillmeta">${esc(h.note)}</span>` : ""}<span class="pillmeta">${icon("shield", "ic-xs")} Public SSN</span></div></div>
-    <div class="block"><div style="display:flex;justify-content:space-between;align-items:center"><h3>Right now</h3>${edStatus()}</div>
+    <div class="block"><div style="display:flex;justify-content:space-between;align-items:center"><h3>${h.stale ? "Last known" : "Right now"}</h3>${h.stale ? `<span class="live stale">As of ${when(h.updatedAt)}</span>` : edStatus()}</div>
       <div class="kv"><span>Waiting to be seen</span><strong>${h.waiting}</strong></div>
       <div class="kv"><span>Being treated</span><strong>${h.treating}</strong></div>
       ${triageBar(h)}</div>
@@ -554,8 +563,8 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) load
 setInterval(() => { if (!document.hidden) loadEd(true); }, 60000);
 // Show the dated snapshot straight away (labelled "Not live"); the live request replaces it
 if (window.DA_ED_SNAPSHOT) {
-  ed.list = normaliseEd(window.DA_ED_SNAPSHOT.data);
   ed.fetchedAt = new Date(window.DA_ED_SNAPSHOT.fetchedAt);
+  ed.list = normaliseEd(window.DA_ED_SNAPSHOT.data, ed.fetchedAt);
 }
 render();
 loadEd(true);
