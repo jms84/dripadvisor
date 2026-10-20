@@ -286,6 +286,7 @@ async function loadEd(force = false) {
     ed.list = fresh; ed.fetchedAt = new Date(); ed.live = true;
   } catch (e) {
     ed.live = false;
+    setTimeout(() => loadEd(true), 10000);
   }
   ed.loading = false;
   render();
@@ -550,6 +551,7 @@ function bindSearch() {
 
 window.addEventListener("hashchange", () => { document.getElementById("view").innerHTML = ""; render(); window.scrollTo(0, 0); if (location.hash.startsWith("#/er")) loadEd(); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadEd(); });
+setInterval(() => { if (!document.hidden) loadEd(true); }, 60000);
 // Show the dated snapshot straight away (labelled "Not live"); the live request replaces it
 if (window.DA_ED_SNAPSHOT) {
   ed.list = normaliseEd(window.DA_ED_SNAPSHOT.data);
